@@ -10,7 +10,8 @@ The interface uses the neocamera layout. The area where the camera viewfinder wo
 - **Solo view.** Tap a scope to show it full size. Tap it again to go back to the grid.
 - **Record.** Push the red shutter button to start. Push it again to stop. The file downloads immediately.
 - **MIDI toggle (bottom right).** When MIDI is off, the app saves a WAV file. When MIDI is on (yellow fill), the app saves a ZIP file. The ZIP file contains the WAV file and a MIDI file. The MIDI file has the detected notes and an estimated tempo.
-- **Gain toggle (bottom left).** Push to change the input gain: 0 dB, +10 dB, −10 dB. The gain changes the scopes and the recording.
+- **Lo Cut (bottom left).** Push to turn on the low-cut filter (yellow fill). The filter is a 12 dB/octave high-pass filter at 80 Hz. It changes the scopes and the recording. It is off at start.
+- **Gain (top right).** Push to change the input gain: −24, −10, 0, +10, +24 dB. The gain changes the scopes and the recording. It is 0 dB at start.
 - **Clip indicator.** CLIP comes on red when the signal gets to full scale. Tap it to reset it.
 - **Layouts.** Portrait layout for phones. Landscape layout for wide screens, with the controls in a column on the right.
 
@@ -20,7 +21,9 @@ The interface uses the neocamera layout. The area where the camera viewfinder wo
 |-------|------------------|
 | Space | Start/stop recording |
 | M     | MIDI on/off      |
-| G     | Change gain      |
+| G     | Next gain step   |
+| Shift+G | Previous gain step |
+| L     | Lo Cut on/off    |
 
 ## Requirements
 
