@@ -1,5 +1,7 @@
 # neoscope
 
+**Version 1.1.1**
+
 neoscope is a voice recorder and live audio analyzer. It is one HTML file. It uses no libraries and no network. It works fully offline.
 
 The interface uses the neocamera layout. The area where the camera viewfinder would be shows the audio scopes from neoaudioscope.
