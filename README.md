@@ -36,3 +36,4 @@ The interface uses the neocamera layout. The area where the camera viewfinder wo
 - Recordings are 16-bit PCM WAV at the device sample rate. A mono input gives a mono file.
 - MIDI detection works best with one note at a time (voice, whistle, a single instrument line).
 - You cannot change the MIDI setting during a recording.
+- A recording stops automatically at the WAV file size limit (4 GB, approximately 6 hours at 48 kHz). On phones, the memory limit of the browser can be lower than this.
