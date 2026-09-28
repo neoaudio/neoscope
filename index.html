@@ -21,8 +21,11 @@ button:focus-visible{box-shadow:0 0 0 2px var(--y)}
 #info{font-size:12px;font-weight:500;color:rgba(255,255,255,.6);font-variant-numeric:tabular-nums;white-space:nowrap}
 #timer{justify-self:center;font-size:17px;font-variant-numeric:tabular-nums;letter-spacing:.02em;padding:3px 8px;border-radius:6px;transition:background .2s}
 #timer.on{background:var(--r)}
-#clip{justify-self:end;font-size:10px;font-weight:700;letter-spacing:.08em;padding:5px 9px;border-radius:11px;color:rgba(255,255,255,.35);background:rgba(255,255,255,.09);transition:background .15s,color .15s}
+#tr{justify-self:end;display:flex;align-items:center;gap:8px}
+#gain,#clip{font-size:10px;font-weight:700;letter-spacing:.08em;padding:5px 9px;border-radius:11px;color:rgba(255,255,255,.35);background:rgba(255,255,255,.09);transition:background .15s,color .15s}
 #clip.on{background:var(--r);color:#fff}
+#gain{color:#fff;font-variant-numeric:tabular-nums;min-width:52px;text-align:center}
+#gain.alt{color:var(--y)}
 
 /* viewport */
 #view{grid-area:view;position:relative;background:#000;overflow:hidden}
@@ -48,18 +51,13 @@ button:focus-visible{box-shadow:0 0 0 2px var(--y)}
 
 /* controls */
 #ctrl{grid-area:ctrl;height:calc(132px + env(safe-area-inset-bottom));padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);display:grid;grid-template-columns:1fr auto 1fr;align-items:center;justify-items:center}
-#gain{width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,.14);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;transition:transform .15s}
-#gain .gv{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
-#gain .gu{font-size:9px;font-weight:600;letter-spacing:.06em;color:rgba(255,255,255,.6);margin-top:2px}
-#gain.alt .gv{color:var(--y)}
-#gain:active{transform:scale(.92)}
 #rec{width:76px;height:76px;border-radius:50%;border:4px solid #fff;display:grid;place-items:center;transition:opacity .2s}
 #rec span{display:block;width:60px;height:60px;border-radius:30px;background:var(--r);transition:width .25s cubic-bezier(.3,.7,.3,1),height .25s cubic-bezier(.3,.7,.3,1),border-radius .25s,transform .1s}
 #rec.on span{width:30px;height:30px;border-radius:7px}
 #rec:active span{transform:scale(.94)}
 #rec:disabled{opacity:.45;cursor:default}
-#midi{height:34px;min-width:64px;padding:0 16px;border-radius:17px;background:rgba(255,255,255,.14);font-size:13px;font-weight:700;letter-spacing:.08em;transition:background .2s,color .2s,opacity .2s}
-#midi.on{background:var(--y);color:#000}
+#locut,#midi{height:34px;white-space:nowrap;width:84px;padding:0;border-radius:17px;background:rgba(255,255,255,.14);font-size:13px;font-weight:700;letter-spacing:.08em;transition:background .2s,color .2s,opacity .2s}
+#locut.on,#midi.on{background:var(--y);color:#000}
 #midi:disabled{opacity:.5;cursor:default}
 
 /* start gate */
@@ -85,7 +83,10 @@ button:focus-visible{box-shadow:0 0 0 2px var(--y)}
   <header id="top">
     <div id="info">—</div>
     <div id="timer">00:00:00</div>
-    <button id="clip" aria-label="Clip indicator. Tap to reset.">CLIP</button>
+    <div id="tr">
+      <button id="gain" aria-label="Input gain">0 dB</button>
+      <button id="clip" aria-label="Clip indicator. Tap to reset.">CLIP</button>
+    </div>
   </header>
   <main id="view">
     <div class="grid" id="grid">
@@ -98,7 +99,7 @@ button:focus-visible{box-shadow:0 0 0 2px var(--y)}
     <div id="toast"></div>
   </main>
   <footer id="ctrl">
-    <button id="gain" aria-label="Input gain"><span class="gv">0</span><span class="gu">dB</span></button>
+    <button id="locut" aria-pressed="false" aria-label="Low cut filter, 80 Hz">Lo Cut</button>
     <button id="rec" aria-label="Record" disabled><span></span></button>
     <button id="midi" aria-pressed="false" aria-label="MIDI export">MIDI</button>
   </footer>
@@ -243,7 +244,7 @@ function midiLib(){
 const $=s=>document.querySelector(s);
 const Y='#FFD60A',RED='#FF3B30';
 const FONT='-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif';
-const GAINS=[0,10,-10];
+const GAINS=[-24,-10,0,10,24];
 
 if(window.AnalyserNode&&!AnalyserNode.prototype.getFloatTimeDomainData){
   AnalyserNode.prototype.getFloatTimeDomainData=function(a){const b=new Uint8Array(a.length);this.getByteTimeDomainData(b);for(let i=0;i<a.length;i++)a[i]=(b[i]-128)/128;};
@@ -251,10 +252,10 @@ if(window.AnalyserNode&&!AnalyserNode.prototype.getFloatTimeDomainData){
 
 const S={ctx:null,stream:null,gain:null,anMix:null,anL:null,anR:null,rec:null,recMode:'',ready:false,
   recording:false,capturing:false,busy:false,chunks:[],frames:0,recT:0,startDate:null,stopResolve:null,
-  gIdx:0,midi:false,midiRec:false,clip:false,wl:null,fb:null,tl:null,tr:null};
+  gIdx:2,midi:false,locut:false,hpWet:null,hpDry:null,midiRec:false,clip:false,wl:null,fb:null,tl:null,tr:null};
 
 const el={info:$('#info'),timer:$('#timer'),clip:$('#clip'),grid:$('#grid'),focus:$('#focus'),toast:$('#toast'),
-  gain:$('#gain'),gv:$('#gain .gv'),rec:$('#rec'),midi:$('#midi'),gate:$('#gate'),gateMsg:$('#gateMsg'),gateBtn:$('#gateBtn')};
+  gain:$('#gain'),locut:$('#locut'),rec:$('#rec'),midi:$('#midi'),gate:$('#gate'),gateMsg:$('#gateMsg'),gateBtn:$('#gateBtn')};
 
 /* ---------------- UI helpers ---------------- */
 function gate(msg,btn){el.gate.classList.remove('hide');el.gateMsg.textContent=msg;if(btn){el.gateBtn.textContent=btn;el.gateBtn.hidden=false;}else el.gateBtn.hidden=true;}
@@ -271,7 +272,9 @@ function ui(){
   el.midi.setAttribute('aria-pressed',String(S.midi));
   el.midi.disabled=S.recording||S.busy;
   const g=GAINS[S.gIdx];
-  el.gv.textContent=g>0?'+'+g:g<0?'\u2212'+(-g):'0';
+  el.gain.textContent=(g>0?'+'+g:g<0?'\u2212'+(-g):'0')+' dB';
+  el.locut.classList.toggle('on',S.locut);
+  el.locut.setAttribute('aria-pressed',String(S.locut));
   el.gain.classList.toggle('alt',g!==0);
 }
 function setClip(){if(!S.clip){S.clip=true;el.clip.classList.add('on');}}
@@ -293,16 +296,22 @@ async function init(){
     g.channelCount=2;g.channelCountMode='explicit';g.channelInterpretation='speakers';
     g.gain.value=Math.pow(10,GAINS[S.gIdx]/20);
     src.connect(g);
+    /* low cut: 2nd-order Butterworth high-pass, 80 Hz, 12 dB/oct; wet/dry switch for click-free toggling */
+    const hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=80;hp.Q.value=20*Math.log10(Math.SQRT1_2); /* Web Audio HP Q is in dB: -3.01 dB = Butterworth */
+    const post=ctx.createGain(),wet=S.hpWet=ctx.createGain(),dry=S.hpDry=ctx.createGain();
+    for(const nd of [hp,post,wet,dry]){nd.channelCount=2;nd.channelCountMode='explicit';nd.channelInterpretation='speakers';}
+    wet.gain.value=S.locut?1:0;dry.gain.value=S.locut?0:1;
+    g.connect(hp);hp.connect(wet);wet.connect(post);g.connect(dry);dry.connect(post);
     const mix=S.anMix=ctx.createAnalyser();
     mix.fftSize=8192;mix.smoothingTimeConstant=0.6;mix.minDecibels=-120;mix.maxDecibels=0;
-    g.connect(mix);
-    const sp=ctx.createChannelSplitter(2);g.connect(sp);
+    post.connect(mix);
+    const sp=ctx.createChannelSplitter(2);post.connect(sp);
     S.anL=ctx.createAnalyser();S.anR=ctx.createAnalyser();
     S.anL.fftSize=S.anR.fftSize=2048;S.anL.smoothingTimeConstant=S.anR.smoothingTimeConstant=0;
     sp.connect(S.anL,0);sp.connect(S.anR,1);
     S.fb=new Float32Array(mix.frequencyBinCount);S.tl=new Float32Array(2048);S.tr=new Float32Array(2048);
     const mute=ctx.createGain();mute.gain.value=0;mute.connect(ctx.destination);
-    await setupRecorder(g,mute);
+    await setupRecorder(post,mute);
     const trk=S.stream.getAudioTracks()[0];
     let ch=0;try{ch=(trk.getSettings()||{}).channelCount||0;}catch(e){}
     el.info.textContent=(Math.round(ctx.sampleRate/100)/10)+' kHz'+(ch===1?' \u00b7 MONO':ch>=2?' \u00b7 STEREO':'');
@@ -696,15 +705,21 @@ function frame(t){
 requestAnimationFrame(frame);
 
 /* ---------------- interactions ---------------- */
-function cycleGain(){
-  S.gIdx=(S.gIdx+1)%GAINS.length;
+function cycleGain(dir){
+  S.gIdx=(S.gIdx+(dir||1)+GAINS.length)%GAINS.length;
   if(S.gain)S.gain.gain.setTargetAtTime(Math.pow(10,GAINS[S.gIdx]/20),S.ctx.currentTime,0.02);
+  ui();
+}
+function toggleLocut(){
+  S.locut=!S.locut;
+  if(S.hpWet){const t=S.ctx.currentTime;S.hpWet.gain.setTargetAtTime(S.locut?1:0,t,0.015);S.hpDry.gain.setTargetAtTime(S.locut?0:1,t,0.015);}
   ui();
 }
 function toggleMidi(){if(S.recording||S.busy)return;S.midi=!S.midi;ui();}
 function toggleRec(){if(S.recording)stopRec();else startRec();}
 
-el.gain.addEventListener('click',cycleGain);
+el.gain.addEventListener('click',()=>cycleGain(1));
+el.locut.addEventListener('click',toggleLocut);
 el.midi.addEventListener('click',toggleMidi);
 el.rec.addEventListener('click',toggleRec);
 el.clip.addEventListener('click',()=>{S.clip=false;el.clip.classList.remove('on');LV.hd=[-90,-90];});
@@ -735,7 +750,8 @@ document.addEventListener('keydown',e=>{
   if(e.repeat||e.metaKey||e.ctrlKey||e.altKey)return;
   if(e.code==='Space'){e.preventDefault();toggleRec();}
   else if(e.code==='KeyM')toggleMidi();
-  else if(e.code==='KeyG')cycleGain();
+  else if(e.code==='KeyG')cycleGain(e.shiftKey?-1:1);
+  else if(e.code==='KeyL')toggleLocut();
 });
 
 ui();
