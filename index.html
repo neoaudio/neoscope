@@ -251,7 +251,7 @@ if(window.AnalyserNode&&!AnalyserNode.prototype.getFloatTimeDomainData){
 }
 
 const S={ctx:null,stream:null,gain:null,anMix:null,anL:null,anR:null,rec:null,recMode:'',ready:false,
-  recording:false,capturing:false,busy:false,chunks:[],frames:0,recT:0,startDate:null,stopResolve:null,
+  recording:false,starting:false,capturing:false,busy:false,chunks:[],frames:0,recId:0,recSr:0,stereo:false,wlURL:null,recT:0,startDate:null,stopResolve:null,
   gIdx:2,midi:false,locut:false,hpWet:null,hpDry:null,midiRec:false,clip:false,wl:null,fb:null,tl:null,tr:null};
 
 const el={info:$('#info'),timer:$('#timer'),clip:$('#clip'),grid:$('#grid'),focus:$('#focus'),toast:$('#toast'),
@@ -280,9 +280,20 @@ function ui(){
 function setClip(){if(!S.clip){S.clip=true;el.clip.classList.add('on');}}
 
 /* ---------------- audio setup ---------------- */
-const WORKLET="class NsRec extends AudioWorkletProcessor{constructor(){super();this.on=false;this.n=0;this.L=new Float32Array(4096);this.R=new Float32Array(4096);this.port.onmessage=e=>{if(e.data==='start'){this.on=true;this.n=0}else if(e.data==='stop'){this.on=false;this.flush();this.port.postMessage({done:1})}}}flush(){if(this.n>0){this.port.postMessage({l:this.L.slice(0,this.n),r:this.R.slice(0,this.n)});this.n=0}}process(inputs){const i=inputs[0];if(this.on&&i&&i.length){const l=i[0],r=i.length>1?i[1]:i[0];for(let k=0;k<l.length;k++){this.L[this.n]=l[k];this.R[this.n]=r[k];if(++this.n===4096)this.flush()}}return true}}registerProcessor('nsrec',NsRec);";
+const WORKLET="class NsRec extends AudioWorkletProcessor{constructor(){super();this.on=false;this.id=0;this.n=0;this.L=new Float32Array(4096);this.R=new Float32Array(4096);this.port.onmessage=e=>{const d=e.data;if(d.c==='start'){this.id=d.id;this.on=true;this.n=0}else if(d.c==='stop'){this.on=false;this.flush();this.port.postMessage({id:this.id,done:1})}}}flush(){if(this.n>0){const l=this.L.slice(0,this.n),r=this.R.slice(0,this.n);this.port.postMessage({id:this.id,l:l,r:r},[l.buffer,r.buffer]);this.n=0}}process(inputs){const i=inputs[0];if(this.on&&i&&i.length){const l=i[0],r=i.length>1?i[1]:i[0];for(let k=0;k<l.length;k++){this.L[this.n]=l[k];this.R[this.n]=r[k];if(++this.n===4096)this.flush()}}return true}}registerProcessor('nsrec',NsRec);";
+
+/* release the old stream and audio context before a retry */
+function teardown(){
+  S.ready=false;
+  try{if(S.stream)S.stream.getTracks().forEach(t=>t.stop());}catch(e){}
+  try{if(S.ctx&&S.ctx.state!=='closed')S.ctx.close();}catch(e){}
+  if(S.wlURL){URL.revokeObjectURL(S.wlURL);S.wlURL=null;}
+  S.stream=S.ctx=S.gain=S.anMix=S.anL=S.anR=S.rec=S.hpWet=S.hpDry=null;S.recMode='';
+}
 
 async function init(){
+  if(S.busy){gate('Saving the recording\u2026','Try again');return;}
+  teardown();
   gate('Allow microphone access to start.','');
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){gate('Microphone input is not available in this browser.','');return;}
   try{
@@ -322,15 +333,15 @@ async function init(){
     if(ctx.state!=='running'){try{await ctx.resume();}catch(e){}}
     if(ctx.state!=='running')gate('Tap to start audio.','Start');else ungate();
     ui();
-  }catch(e){gate('The audio engine did not start ('+(e&&e.message||e)+').','Try again');}
+  }catch(e){teardown();gate('The audio engine did not start ('+(e&&e.message||e)+').','Try again');}
 }
 
 async function setupRecorder(g,mute){
   const ctx=S.ctx;
   if(ctx.audioWorklet&&window.AudioWorkletNode){
     try{
-      const url=URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'}));
-      await ctx.audioWorklet.addModule(url);
+      const url=S.wlURL=URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'}));
+      try{await ctx.audioWorklet.addModule(url);}finally{URL.revokeObjectURL(url);S.wlURL=null;}
       const n=new AudioWorkletNode(ctx,'nsrec',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1],channelCount:2,channelCountMode:'explicit',channelInterpretation:'speakers'});
       n.port.onmessage=e=>onChunk(e.data);
       g.connect(n);n.connect(mute);S.rec=n;S.recMode='worklet';return;
@@ -340,63 +351,94 @@ async function setupRecorder(g,mute){
   sp.onaudioprocess=e=>{
     if(!S.capturing)return;
     const ib=e.inputBuffer,l=ib.getChannelData(0),r=ib.numberOfChannels>1?ib.getChannelData(1):l;
-    onChunk({l:l.slice(0),r:r.slice(0)});
+    onChunk({id:S.recId,l:l,r:r});
   };
   g.connect(sp);sp.connect(mute);S.rec=sp;S.recMode='sp';
 }
 
+/* WAV data size field is 32-bit: stop before a 16-bit stereo file gets to 4 GB */
+const MAX_FRAMES=Math.floor((0xFFFFFFFF-44)/4);
 function onChunk(d){
+  if(d.id!==S.recId)return;
   if(d.done){const f=S.stopResolve;S.stopResolve=null;if(f)f();return;}
   if(!S.capturing)return;
-  S.chunks.push(d);S.frames+=d.l.length;
-  const l=d.l,r=d.r;
-  for(let i=0;i<l.length;i++){if(l[i]>=1||l[i]<=-1||r[i]>=1||r[i]<=-1){setClip();break;}}
+  const l=d.l,r=d.r,n=l.length,li=new Int16Array(n),ri=new Int16Array(n);
+  let clip=false,st=S.stereo;
+  for(let i=0;i<n;i++){
+    let a=l[i],b=r[i];
+    if(a>=1){a=1;clip=true;}else if(a<=-1){a=-1;clip=true;}
+    if(b>=1){b=1;clip=true;}else if(b<=-1){b=-1;clip=true;}
+    if(!st&&a!==b)st=true;
+    li[i]=a<0?a*32768:a*32767;ri[i]=b<0?b*32768:b*32767;
+  }
+  S.stereo=st;if(clip)setClip();
+  S.chunks.push({l:li,r:ri});S.frames+=n;
+  if(S.frames>=MAX_FRAMES&&S.recording){toast('Maximum length. Recording stopped.');stopRec();}
 }
 
 /* ---------------- recording ---------------- */
 async function startRec(){
+  if(!S.ready||S.recording||S.busy||S.starting)return;
+  S.starting=true;
+  try{if(S.ctx.state!=='running'){try{await S.ctx.resume();}catch(e){}}}finally{S.starting=false;}
   if(!S.ready||S.recording||S.busy)return;
-  if(S.ctx.state!=='running'){try{await S.ctx.resume();}catch(e){}}
-  S.chunks=[];S.frames=0;S.startDate=new Date();S.recT=performance.now();S.midiRec=S.midi;
+  S.recId++;S.chunks=[];S.frames=0;S.stereo=false;S.recSr=S.ctx.sampleRate;
+  S.startDate=new Date();S.recT=performance.now();S.midiRec=S.midi;
   S.capturing=true;S.recording=true;
-  if(S.recMode==='worklet')S.rec.port.postMessage('start');
+  if(S.recMode==='worklet')S.rec.port.postMessage({c:'start',id:S.recId});
   el.timer.textContent='00:00:00';
   ui();
-  try{if(navigator.wakeLock)S.wl=await navigator.wakeLock.request('screen');}catch(e){}
+  try{
+    if(navigator.wakeLock){const wl=await navigator.wakeLock.request('screen');if(S.recording)S.wl=wl;else wl.release();}
+  }catch(e){}
 }
 
 async function stopRec(){
   if(!S.recording)return;
   S.recording=false;S.busy=true;ui();
-  if(S.recMode==='worklet'){
-    await new Promise(res=>{S.stopResolve=res;try{S.rec.port.postMessage('stop');}catch(e){res();}setTimeout(res,1500);});
+  if(S.recMode==='worklet'&&S.rec){
+    await new Promise(res=>{S.stopResolve=res;try{S.rec.port.postMessage({c:'stop'});}catch(e){res();}setTimeout(res,1500);});
   }
   S.capturing=false;S.stopResolve=null;
+  S.recId++; /* any late chunk from this recording is now ignored */
   try{if(S.wl){S.wl.release();S.wl=null;}}catch(e){}
   try{await finish();}catch(e){toast('Save failed');}
-  S.busy=false;ui();
+  S.chunks=[];S.busy=false;ui();
 }
 
 function pad(n){return String(n).padStart(2,'0');}
 function baseName(d){return 'neoscope-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds());}
 
+const LE=new Uint8Array(new Uint16Array([1]).buffer)[0]===1;
+function le16(a){ /* WAV is little-endian; swap bytes only on a big-endian device */
+  if(LE)return a;
+  const o=new Uint8Array(a.length*2),v=new DataView(o.buffer);for(let i=0;i<a.length;i++)v.setInt16(i*2,a[i],true);return o;
+}
+
 async function finish(){
-  const n=S.frames;
-  if(n<1){toast('Nothing recorded');S.chunks=[];return;}
-  const L=new Float32Array(n),R=new Float32Array(n);let o=0;
-  for(const c of S.chunks){L.set(c.l,o);R.set(c.r,o);o+=c.l.length;}
-  S.chunks=[];
-  let mono=true;for(let i=0;i<n;i++){if(L[i]!==R[i]){mono=false;break;}}
-  const sr=S.ctx.sampleRate,base=baseName(S.startDate);
-  const wavBytes=encodeWav(mono?[L]:[L,R],sr);
-  if(!S.midiRec){download(new Blob([wavBytes],{type:'audio/wav'}),base+'.wav');toast('Saved \u00b7 WAV');return;}
+  const n=S.frames,chunks=S.chunks;S.chunks=[];
+  if(n<1){toast('Nothing recorded');return;}
+  const sr=S.recSr,base=baseName(S.startDate),stereo=S.stereo,nc=stereo?2:1;
+  /* build the PCM data without a second full-length float copy */
+  let raw;
+  if(stereo){
+    const it=new Int16Array(n*2);let o=0;
+    for(let k=0;k<chunks.length;k++){const c=chunks[k],l=c.l,r=c.r;for(let i=0;i<l.length;i++){it[o++]=l[i];it[o++]=r[i];}chunks[k]=null;}
+    raw=[it];
+  }else{
+    raw=chunks.map(c=>c.l);chunks.length=0;
+  }
+  const wav=[wavHeader(nc,n,sr)].concat(raw.map(le16));
+  if(!S.midiRec){download(new Blob(wav,{type:'audio/wav'}),base+'.wav');toast('Saved \u00b7 WAV');return;}
   toast('Analyzing notes\u2026',true);
   await new Promise(r=>setTimeout(r,30));
-  let mixd=L;
-  if(!mono){mixd=new Float32Array(n);for(let i=0;i<n;i++)mixd[i]=(L[i]+R[i])*0.5;}
+  /* mono float mix for pitch analysis, built from the 16-bit data */
+  const mixd=new Float32Array(n);
+  if(stereo){const it=raw[0];for(let i=0;i<n;i++)mixd[i]=(it[2*i]+it[2*i+1])/65536;}
+  else{let o=0;for(const v of raw){for(let i=0;i<v.length;i++)mixd[o++]=v[i]/32768;}}
   let res=null;try{res=await runMidi(mixd,sr);}catch(e){res=null;}
-  const files=[{name:base+'.wav',data:wavBytes}];
-  if(res)files.push({name:base+'.mid',data:res.bytes});
+  const files=[{name:base+'.wav',parts:wav}];
+  if(res)files.push({name:base+'.mid',parts:[res.bytes]});
   download(zip(files),base+'.zip');
   toast(res?('Saved \u00b7 ZIP \u00b7 '+res.bpm+' BPM \u00b7 '+res.count+(res.count===1?' note':' notes')):'Saved \u00b7 ZIP \u00b7 MIDI failed');
 }
@@ -404,42 +446,41 @@ async function finish(){
 let workerURL=null;
 function runMidi(x,sr){
   return new Promise((resolve,reject)=>{
-    const local=()=>{try{resolve(midiLib().analyze(x,sr));}catch(e){reject(e);}};
     let w=null;
     try{
       if(!workerURL)workerURL=URL.createObjectURL(new Blob([midiLib.toString()+'\nvar M=midiLib();onmessage=function(e){var r=M.analyze(e.data.x,e.data.sr);postMessage(r,[r.bytes.buffer]);};'],{type:'application/javascript'}));
       w=new Worker(workerURL);
     }catch(e){w=null;}
-    if(!w){local();return;}
-    let done=false;
-    w.onmessage=e=>{done=true;w.terminate();resolve(e.data);};
-    w.onerror=e=>{if(e&&e.preventDefault)e.preventDefault();w.terminate();if(!done){done=true;local();}};
-    w.postMessage({x:x,sr:sr});
+    if(!w){try{resolve(midiLib().analyze(x,sr));}catch(e){reject(e);}return;}
+    const end=v=>{w.onmessage=w.onerror=w.onmessageerror=null;w.terminate();resolve(v);};
+    w.onmessage=e=>end(e.data);
+    w.onerror=e=>{if(e&&e.preventDefault)e.preventDefault();end(null);};
+    w.onmessageerror=()=>end(null);
+    w.postMessage({x:x,sr:sr},[x.buffer]); /* transfer, no copy */
   });
 }
 
-function encodeWav(chs,sr){
-  const nc=chs.length,n=chs[0].length,ba=nc*2,buf=new ArrayBuffer(44+n*ba),v=new DataView(buf);
+function wavHeader(nc,n,sr){
+  const ba=nc*2,buf=new ArrayBuffer(44),v=new DataView(buf);
   const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
   ws(0,'RIFF');v.setUint32(4,36+n*ba,true);ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);
   v.setUint16(22,nc,true);v.setUint32(24,sr,true);v.setUint32(28,sr*ba,true);v.setUint16(32,ba,true);v.setUint16(34,16,true);
   ws(36,'data');v.setUint32(40,n*ba,true);
-  let o=44;
-  for(let i=0;i<n;i++){for(let c=0;c<nc;c++){let s=chs[c][i];s=s>1?1:s<-1?-1:s;v.setInt16(o,s<0?s*32768:s*32767,true);o+=2;}}
   return new Uint8Array(buf);
 }
 
 const CRC=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
-function crc32(u){let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
+function bytes(a){return a instanceof Uint8Array?a:new Uint8Array(a.buffer,a.byteOffset,a.byteLength);}
+function crc32(parts){let c=0xFFFFFFFF;for(const p of parts){const u=bytes(p);for(let i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);}return(c^0xFFFFFFFF)>>>0;}
 function zip(files){
   const enc=new TextEncoder(),parts=[],cen=[],d=new Date();let off=0;
   const tm=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),dt=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
   for(const f of files){
-    const nm=enc.encode(f.name),crc=crc32(f.data),sz=f.data.length;
+    const nm=enc.encode(f.name),crc=crc32(f.parts);let sz=0;for(const q of f.parts)sz+=q.byteLength;
     const h=new DataView(new ArrayBuffer(30));
     h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(10,tm,true);h.setUint16(12,dt,true);
     h.setUint32(14,crc,true);h.setUint32(18,sz,true);h.setUint32(22,sz,true);h.setUint16(26,nm.length,true);
-    parts.push(h.buffer,nm,f.data);
+    parts.push(h.buffer,nm);for(const q of f.parts)parts.push(q);
     const c=new DataView(new ArrayBuffer(46));
     c.setUint32(0,0x02014b50,true);c.setUint16(4,20,true);c.setUint16(6,20,true);c.setUint16(12,tm,true);c.setUint16(14,dt,true);
     c.setUint32(16,crc,true);c.setUint32(20,sz,true);c.setUint32(24,sz,true);c.setUint16(28,nm.length,true);c.setUint32(42,off,true);
@@ -455,7 +496,7 @@ function zip(files){
 function download(blob,name){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.style.display='none';
   document.body.appendChild(a);a.click();
-  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},5000);
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},60000);
 }
 
 /* ---------------- scopes ---------------- */
@@ -691,7 +732,7 @@ function frame(t){
   const dt=Math.min(0.1,Math.max(0,(t-lastT)/1000));lastT=t;
   for(const k in P)sizeP(P[k]);
   let fb=null,l=null,r=null;
-  if(S.ready&&S.ctx.state==='running'){
+  if(S.ready&&S.ctx&&S.ctx.state==='running'){
     if(P.spec.vis||P.sgram.vis){S.anMix.getFloatFrequencyData(S.fb);fb=S.fb;}
     S.anL.getFloatTimeDomainData(S.tl);S.anR.getFloatTimeDomainData(S.tr);l=S.tl;r=S.tr;
   }
@@ -707,12 +748,12 @@ requestAnimationFrame(frame);
 /* ---------------- interactions ---------------- */
 function cycleGain(dir){
   S.gIdx=(S.gIdx+(dir||1)+GAINS.length)%GAINS.length;
-  if(S.gain)S.gain.gain.setTargetAtTime(Math.pow(10,GAINS[S.gIdx]/20),S.ctx.currentTime,0.02);
+  if(S.gain&&S.ctx)S.gain.gain.setTargetAtTime(Math.pow(10,GAINS[S.gIdx]/20),S.ctx.currentTime,0.02);
   ui();
 }
 function toggleLocut(){
   S.locut=!S.locut;
-  if(S.hpWet){const t=S.ctx.currentTime;S.hpWet.gain.setTargetAtTime(S.locut?1:0,t,0.015);S.hpDry.gain.setTargetAtTime(S.locut?0:1,t,0.015);}
+  if(S.hpWet&&S.ctx){const t=S.ctx.currentTime;S.hpWet.gain.setTargetAtTime(S.locut?1:0,t,0.015);S.hpDry.gain.setTargetAtTime(S.locut?0:1,t,0.015);}
   ui();
 }
 function toggleMidi(){if(S.recording||S.busy)return;S.midi=!S.midi;ui();}
@@ -746,6 +787,7 @@ el.gate.addEventListener('click',async()=>{
 });
 document.addEventListener('pointerdown',()=>{if(S.ctx&&S.ready&&S.ctx.state==='suspended')S.ctx.resume().catch(()=>{});},true);
 
+document.addEventListener('keyup',e=>{if(e.code==='Space')e.preventDefault();});
 document.addEventListener('keydown',e=>{
   if(e.repeat||e.metaKey||e.ctrlKey||e.altKey)return;
   if(e.code==='Space'){e.preventDefault();toggleRec();}
